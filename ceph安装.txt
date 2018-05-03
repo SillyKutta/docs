@@ -1,0 +1,175 @@
+本次搭建两节点的ceph集群，其中主机admin是管理节点和数据节点，node0是数据节点
+
+1.在主机的hosts文件添加项目
+在两台主机上添加以下hosts项
+10.108.211.21	admin
+10.108.208.62	node0
+
+2.安装ceph-deploy（仅admin安装）
+ubuntu：
+(1)切换国内镜像源
+$ nano /etc/apt/sources.list
+添加以下内容
+deb http://mirrors.163.com/ubuntu/ trusty main restricted universe multiverse 
+deb http://mirrors.163.com/ubuntu/ trusty-security main restricted universe multiverse 
+deb http://mirrors.163.com/ubuntu/ trusty-updates main restricted universe multiverse 
+deb http://mirrors.163.com/ubuntu/ trusty-proposed main restricted universe multiverse 
+deb http://mirrors.163.com/ubuntu/ trusty-backports main restricted universe multiverse 
+deb-src http://mirrors.163.com/ubuntu/ trusty main restricted universe multiverse 
+deb-src http://mirrors.163.com/ubuntu/ trusty-security main restricted universe multiverse 
+deb-src http://mirrors.163.com/ubuntu/ trusty-updates main restricted universe multiverse 
+deb-src http://mirrors.163.com/ubuntu/ trusty-proposed main restricted universe multiverse 
+deb-src http://mirrors.163.com/ubuntu/ trusty-backports main restricted universe multiverse
+
+之后刷新源
+$ sudo apt-get update
+#建议在别的节点也进行此操作
+(2)安装ceph-deploy
+安装ceph apt key
+$ wget -q -O- 'https://download.ceph.com/keys/release.asc' | sudo apt-key add -
+$ echo deb http://download.ceph.com/debian-{ceph-stable-release}/ $(lsb_release -sc) 
+$ main | sudo tee /etc/apt/sources.list.d/ceph.list
+安装ceph-deploy
+$ echo deb http://mirrors.163.com/ceph/debian-jewel/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
+$ sudo apt-get update && sudo apt-get install -y ceph-deploy
+
+centos:
+(1)配置其他依赖包
+$ sudo yum install -y yum-utils && sudo yum-config-manager --add-repo https://dl.fedoraproject.org/pub/epel/7/x86_64/ && sudo yum install --nogpgcheck -y epel-release && sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-EPEL-7 && sudo rm /etc/yum.repos.d/dl.fedoraproject.org*
+(2)添加ceph源
+$ sudo vim /etc/yum.repos.d/ceph.repo
+[Ceph-noarch]
+name=Ceph noarch packages
+baseurl=http://download.ceph.com/rpm-jewel/el7/noarch
+enabled=1
+gpgcheck=1
+type=rpm-md
+gpgkey=https://download.ceph.com/keys/release.asc
+priority=1
+(3)安装ceph-deploy
+sudo yum update && sudo yum install ceph-deploy
+
+3.安装NTP服务
+官方建议在ceph节点安装NTP服务保证时钟一致
+(centos)$ sudo yum install ntp ntpdate ntp-doc
+(ubuntu)$ sudi apt-get install ntp ntpdate ntp-doc
+之后校准系统时钟
+$ ntpdate 0.cn.pool.ntp.org
+
+4.创建非root用户并开启免密sudo权限
+ceph-deploy工具必须以普通用户登录其他ceph节点，否则会有权限问题
+首先在所有节点创建用户（本例命名为cephd，官方要求不要使用ceph否则会有bug）
+$ sudo useradd -d /home/cephd -m cephd
+$ sudo passwd cephd
+添加sudo权限
+$ echo "cephd ALL = (root) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/cephd
+$ sudo chmod 0440 /etc/sudoers.d/cephd
+
+--------之后的所有操作均在cephd用户中进行-------
+5.建立admin节点与其他节点的ssh连接（仅admin节点）
+首先切换到用户cephd
+$ su cephd
+生成ssh密钥
+$ ssh-keygen
+将密钥复制到其他节点
+$ ssh-copy-id cephd@node0
+复制后测试一下ssh连接
+$ ssh cephd@node0
+确认能够成功连接
+为了创建链接时候能够省略用户，我们可以创建一个文件使得当登录某节点时使用指定用户
+$ vi ~/.ssh/config
+Host node0
+	Hostname node0
+	User cephd
+这样我们就可以使用ssh node0直接登录，而不用指定用户cephd@node0
+
+另外centos系统默认开启SELinux，我们需要将其关闭避免某些权限问题
+$ setenforce 0
+同时需要开放防火墙的6789端口，或者直接关闭防火墙
+$ systemctl stop firewalld.service
+
+6.安装ceph（仅admin节点）
+安装过程中未免会出许多问题，如果玩砸了可通过执行以下几条命令回到安装初始状态
+ceph-deploy purge {ceph-node} [{ceph-node}]
+ceph-deploy purgedata {ceph-node} [{ceph-node}]
+ceph-deploy forgetkeys
+rm ceph.*
+示例
+ceph-deploy purge admin node0
+ceph-deploy purgedata admin node0 
+ceph-deploy forgetkeys
+rm ceph.*
+
+首先创建ceph-deploy的执行目录
+$ mkdir ceph-cluster
+$ cd /ceph-cluster
+安装需要在该目录下完成，若进入其他目录则回报文件找不到错误
+
+创建集群
+$ ceph-deploy new admin
+执行后在当前目录下生成几个文件，我们需要修改ceph.conf文件
+首先将mon_host项改为admin的ip地址
+由于ceph默认至少有三个osd节点，但我们只有两个机器，故需要添加以下条目
+osd pool default size = 2 
+osd pool default min size =1
+同时对于某些文件系统，不支持过长的文件名，故需要添加一下设置。否则会报一个当前主机命名长度小于ceph文件命名长度的一个错误。
+osd max object name len = 256
+osd max object namespace len = 64
+
+之后就可以通过ceph-deploy向admin和node0安装ceph了
+$ ceph-deploy install admin node0
+此过程需要等待一段时间，因为ceph-deploy会SSH登录到各node上去，依次执行安装ceph依赖的组件包
+之后需要初始化mon节点并收集密钥
+$ ceph-deploy mon create-initial
+
+这样管理节点局创建成功了，之后需要添加osd节点
+osd节点可以直接为一个块设备，或者是一个文件系统
+由于硬件限制，没有独立的磁盘做osd节点，因此本次直接使用文件系统做节点。我们在node0节点的根目录创建/osd0文件夹，在admin的根节点创建/osd1文件夹。同时将文件夹的创建者换为ceph
+(node0)
+$ sudo mkdir /osd0
+$ sudo chown -R ceph:ceph /osd0
+(admin)
+$ sudo mkdir /osd1
+$ sudo chown -R ceph:ceph /osd1
+接下来，我们需要ceph-deploy节点执行prepare OSD操作，目的是分别在各个OSD节点上创建一些后边激活OSD需要的信息
+$ ceph-deploy --overwrite-conf osd prepare node0:/osd0 admin:/osd1
+接下来激活osd节点
+$ ceph-deploy osd activate node0:/osd0 admin:/osd1
+
+最后一步，通过ceph-deploy admin将配置文件和admin密钥同步到各个节点，以便在各Node上使用ceph命令时,无需指定monitor地址和ceph.client.admin.keyring密钥。
+$ ceph-deploy admin admin node0 
+同时曾加权限
+$ sudo chmod +r /etc/ceph/ceph.client.admin.keyring
+
+我们可以通过以下命令查看安装是否成功
+$ sudo ceph -s
+如果有HEALTH_OK则成功了。
+
+7.安装cephfs
+一个Ceph文件系统需要至少两个RADOS存储池，一个用于数据、一个用于元数据。
+我们创建两个存储池
+$ ceph osd pool create cephfs_data 64
+pool 'cephfs_data' created
+$ ceph osd pool create cephfs_metadata 64
+pool 'cephfs_metadata' created
+之后创建文件系统
+$ ceph fs new cephfs cephfs_metadata cephfs_data
+文件系统需要有元数据服务，因此我们需创建mds节点
+$ ceph-deploy mds create admin node0
+之后查看一下集群MDS状态
+$ ceph mds stat
+若有active状态则成功
+
+我们在挂载cephfs时需要密钥，密钥文件在/etc/ceph/ceph.client.admin.keyring中
+$ cat /etc/ceph/ceph.client.admin.keyring
+[client.admin]
+    key = AQD/6ShariweMRAAkc1xN/H0ocAlpjp09z5blw==
+    caps mds = "allow *"
+    caps mon = "allow *"
+    caps osd = "allow *"
+我们在挂载时需要用到key
+最后我们就可以使用挂载了
+$ sudo mount -t ceph <mon节点的ip>:6789:/ <要挂载的目录> -o name=admin,secret=<key>
+通过命令df -h可以查看挂载情况。
+
+

@@ -1,0 +1,56 @@
+1.首先下载解压Harbor安装包
+$ wget https://github.com/vmware/harbor/releases/download/v1.4.0/harbor-offline-installer-v1.4.0.tgz
+$ tar -zxvf harbor-offline-installer-v1.4.0.tgz
+$ cd harbor
+
+2.修改端口号
+修改docker-compose.yml文件
+proxy->ports中的80:80改为 你的端口号:80
+修改harbor.cfg文件
+hostname 改为 主机ip:你的端口号
+
+3.修改挂载目录（注意需要去除所有的:z标签）
+修改docker-compose.yml文件
+------------------------------------------------------------------------
+<       - /var/log/harbor/:/var/log/docker/:z
+---
+>       - /mnt/cephfs/harbor/log/:/var/log/docker/
+------------------------------------------------------------------------
+<       - /data/registry:/storage:z
+---
+>       - /mnt/cephfs/harbor/data/registry:/storage
+------------------------------------------------------------------------
+<       - /data/config/:/etc/adminserver/config/:z
+<       - /data/secretkey:/etc/adminserver/key:z
+<       - /data/:/data/:z
+---
+>       - /mnt/cephfs/harbor/data/config/:/etc/adminserver/config/
+>       - /mnt/cephfs/harbor/data/secretkey:/etc/adminserver/key
+>       - /mnt/cephfs/harbor/data/:/data/
+------------------------------------------------------------------------
+<       - /data/secretkey:/etc/ui/key:z 
+<       - /data/ca_download/:/etc/ui/ca/:z
+<		- /data/psc/:/etc/ui/token/:z
+---
+>       - /mnt/cephfs/harbor/data/secretkey:/etc/ui/key
+>       - /mnt/cephfs/harbor/data/ca_download/:/etc/ui/ca/
+>		- /mnt/cephfs/harbor/data/psc/:/etc/ui/token/
+------------------------------------------------------------------------
+<       - /data/job_logs:/var/log/jobs:z
+---
+>       - /mnt/cephfs/harbor/data/job_logs:/var/log/jobs
+------------------------------------------------------------------------
+<       - /data/secretkey:/etc/jobservice/key:z
+---
+>       - /mnt/cephfs/harbor/data/secretkey:/etc/jobservice/key
+------------------------------------------------------------------------
+修改harbor.cfg文件
+#The path of cert and key files for nginx, they are applied only the protocol is set to https
+ssl_cert = /mnt/cephfs/harbor/data/cert/server.crt
+ssl_cert_key = /mnt/cephfs/harbor/data/cert/server.key
+#The path of secretkey storage
+secretkey_path = /mnt/cephfs/harbor/data
+
+4.安装
+运行install.sh脚本即可自动安装，安装完后访问对应端口即可使用。
+
